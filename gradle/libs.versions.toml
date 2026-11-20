@@ -1,0 +1,17 @@
+[versions]
+agp = "9.1.0"
+junit = "4.13.2"
+appcompat = "1.7.1"
+material = "1.13.0"
+recyclerview = "1.3.2"
+apkparser = "2.6.10"
+
+[libraries]
+junit = { group = "junit", name = "junit", version.ref = "junit" }
+appcompat = { group = "androidx.appcompat", name = "appcompat", version.ref = "appcompat" }
+material = { group = "com.google.android.material", name = "material", version.ref = "material" }
+recyclerview = { group = "androidx.recyclerview", name = "recyclerview", version.ref = "recyclerview" }
+apkparser = { group = "net.dongliu", name = "apk-parser", version.ref = "apkparser" }
+
+[plugins]
+android-application = { id = "com.android.application", version.ref = "agp" }
