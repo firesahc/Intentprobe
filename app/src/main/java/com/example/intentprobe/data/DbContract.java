@@ -57,6 +57,17 @@ public final class DbContract {
     public static final String COL_FLAGS = "flags";
     public static final String COL_EXTRAS_JSON = "extras_json";
 
+    // Route test state is kept apart from the scanned route rows: a rescan
+    // rebuilds routes, but a user's test result must survive it.
+    public static final String TABLE_ROUTE_TESTS = "route_tests";
+    public static final String COL_ROUTE_KEY = "route_key";
+    public static final String COL_RESOLVE_STATE = "resolve_state";
+    public static final String COL_RESOLVED_COMPONENT = "resolved_component";
+    public static final String COL_RESOLVED_ACTION = "resolved_action";
+    public static final String COL_TEST_RESULT = "test_result";
+    public static final String COL_TESTED_AT = "tested_at";
+    public static final String COL_TESTED_COMPONENT = "tested_component";
+
     public static final String COL_LAST_SEEN = "last_seen";
     public static final String COL_MODULE_VERSION = "module_version";
 }

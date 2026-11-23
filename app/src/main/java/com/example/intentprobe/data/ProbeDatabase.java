@@ -7,7 +7,7 @@ import android.database.sqlite.SQLiteOpenHelper;
 public class ProbeDatabase extends SQLiteOpenHelper {
 
     private static final String DB_NAME = "intentprobe.db";
-    private static final int DB_VERSION = 2;
+    private static final int DB_VERSION = 3;
 
     private static volatile ProbeDatabase instance;
 
@@ -94,6 +94,21 @@ public class ProbeDatabase extends SQLiteOpenHelper {
                 + DbContract.COL_LAST_SEEN + " INTEGER NOT NULL, "
                 + DbContract.COL_MODULE_VERSION + " TEXT, "
                 + "PRIMARY KEY(" + DbContract.COL_PKG + ", " + DbContract.COL_PROCESS + "))");
+
+        createRouteTests(db);
+    }
+
+    private static void createRouteTests(SQLiteDatabase db) {
+        db.execSQL("CREATE TABLE IF NOT EXISTS " + DbContract.TABLE_ROUTE_TESTS + " ("
+                + DbContract.COL_PKG + " TEXT NOT NULL, "
+                + DbContract.COL_ROUTE_KEY + " TEXT NOT NULL, "
+                + DbContract.COL_RESOLVE_STATE + " INTEGER NOT NULL DEFAULT 0, "
+                + DbContract.COL_RESOLVED_COMPONENT + " TEXT, "
+                + DbContract.COL_RESOLVED_ACTION + " TEXT, "
+                + DbContract.COL_TEST_RESULT + " INTEGER NOT NULL DEFAULT 0, "
+                + DbContract.COL_TESTED_AT + " INTEGER NOT NULL DEFAULT 0, "
+                + DbContract.COL_TESTED_COMPONENT + " TEXT, "
+                + "PRIMARY KEY(" + DbContract.COL_PKG + ", " + DbContract.COL_ROUTE_KEY + "))");
     }
 
     @Override
@@ -106,6 +121,9 @@ public class ProbeDatabase extends SQLiteOpenHelper {
             db.execSQL("ALTER TABLE " + DbContract.TABLE_ROUTES
                     + " ADD COLUMN " + DbContract.COL_ORIGIN
                     + " TEXT NOT NULL DEFAULT 'manifest'");
+        }
+        if (oldVersion < 3) {
+            createRouteTests(db);
         }
     }
 }

@@ -32,6 +32,8 @@ import com.example.intentprobe.model.AppEntry;
 import com.example.intentprobe.model.CaptureEntry;
 import com.example.intentprobe.model.ConnectionEntry;
 import com.example.intentprobe.model.RouteCandidate;
+import com.example.intentprobe.route.RouteResolver;
+import com.example.intentprobe.route.RouteTester;
 import com.example.intentprobe.scan.ApkManifestScanner;
 import com.example.intentprobe.scan.DexRouteScanner;
 import com.example.intentprobe.ui.CaptureAdapter;
@@ -58,6 +60,7 @@ public class AppDetailActivity extends AppCompatActivity {
     public static final String EXTRA_PKG = "pkg";
 
     private static final int CAPTURE_LIMIT = 200;
+    private static final long TEST_WINDOW_MS = 30_000;
 
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private final Handler main = new Handler(Looper.getMainLooper());
@@ -73,6 +76,9 @@ public class AppDetailActivity extends AppCompatActivity {
 
     private boolean routesTab = true;
     private boolean scanning;
+    private RouteCandidate pendingTest;
+    private long pendingTestAt;
+    private boolean checkingTest;
 
     private RouteAdapter routeAdapter;
     private CaptureAdapter captureAdapter;
@@ -196,6 +202,7 @@ public class AppDetailActivity extends AppCompatActivity {
         } else {
             loadCaptures();
         }
+        checkPendingTest();
     }
 
     @Override
@@ -236,6 +243,7 @@ public class AppDetailActivity extends AppCompatActivity {
     private void onExternalChange() {
         loadHeader();
         if (!routesTab) loadCaptures();
+        checkPendingTest();
     }
 
     private void loadHeader() {
@@ -437,9 +445,25 @@ public class AppDetailActivity extends AppCompatActivity {
                 repository.replaceRoutes(pkg, routes, System.currentTimeMillis());
                 main.post(() -> {
                     if (isFinishing() || isDestroyed()) return;
+                    tvHint.setText(R.string.resolving_routes);
+                });
+                RouteResolver.resolveAll(this, pkg, routes,
+                        (done, total, matched) -> main.post(() -> {
+                            if (isFinishing() || isDestroyed()) return;
+                            tvHint.setText(getString(R.string.resolving_routes_progress,
+                                    done, total));
+                        }));
+                repository.saveRouteResolutions(pkg, routes);
+                int launchable = 0;
+                for (RouteCandidate route : routes) {
+                    if (route.resolveState == RouteCandidate.RESOLVE_MATCHED) launchable++;
+                }
+                final int resolved = launchable;
+                main.post(() -> {
+                    if (isFinishing() || isDestroyed()) return;
                     scanning = false;
                     Toast.makeText(this, getString(R.string.scan_done_split,
-                            manifest.routes.size(), dexRoutes.size()),
+                            manifest.routes.size(), dexRoutes.size(), resolved),
                             Toast.LENGTH_SHORT).show();
                     loadHeader();
                     loadRoutes();
@@ -531,18 +555,64 @@ public class AppDetailActivity extends AppCompatActivity {
         boolean dex = "dex".equals(route.origin);
         String component = route.alias != null ? route.alias : route.activity;
         boolean hasComponent = component != null && !component.isEmpty();
+        boolean schemeAllowed = RuleExporter.isSchemeAllowed(route.uri);
+        String action = effectiveAction(route);
+
         List<String> hints = new ArrayList<>();
-        if (dex) hints.add(getString(R.string.route_origin_dex_hint));
+        if (dex) {
+            hints.add(getString(R.string.route_origin_dex_hint));
+            if (route.resolveState == RouteCandidate.RESOLVE_MATCHED
+                    && route.resolvedComponent != null) {
+                hints.add(getString(R.string.route_resolved_hint,
+                        CaptureAdapter.simpleName(route.resolvedComponent)));
+            } else if (route.resolveState == RouteCandidate.RESOLVE_NONE) {
+                hints.add(getString(R.string.route_no_match_hint));
+            } else if (route.resolveState == RouteCandidate.RESOLVE_BLOCKED
+                    && route.resolvedComponent != null) {
+                hints.add(getString(R.string.route_blocked_hint,
+                        CaptureAdapter.simpleName(route.resolvedComponent)));
+            } else if (route.resolveState == RouteCandidate.RESOLVE_ERROR) {
+                hints.add(getString(R.string.route_resolve_error_hint));
+            } else {
+                hints.add(getString(R.string.route_resolve_pending_hint));
+            }
+        }
         if (!route.exported) hints.add(getString(R.string.route_not_exported_hint));
         if (route.patternOnly) hints.add(getString(R.string.route_pattern_hint));
         if (route.permission != null) {
             hints.add(getString(R.string.route_permission_hint, route.permission));
         }
-        boolean schemeAllowed = RuleExporter.isSchemeAllowed(route.uri);
         if (!schemeAllowed) hints.add(getString(R.string.route_scheme_hint));
+        if (route.testResult == RouteCandidate.TEST_CAPTURED && route.testedComponent != null) {
+            hints.add(getString(R.string.route_tested_captured_hint,
+                    CaptureAdapter.simpleName(route.testedComponent)));
+        } else if (route.testResult == RouteCandidate.TEST_STARTED
+                || route.testResult == RouteCandidate.TEST_NOT_CAPTURED) {
+            hints.add(getString(R.string.route_tested_not_captured_hint));
+        } else if (route.testResult == RouteCandidate.TEST_FAILED) {
+            hints.add(getString(R.string.route_tested_failed_hint));
+        }
+
+        boolean testable = schemeAllowed && app != null && !app.system
+                && !getPackageName().equals(pkg);
+        if (testable) {
+            if (dex) {
+                testable = route.resolveState == RouteCandidate.RESOLVE_MATCHED;
+            } else {
+                testable = route.exported && route.permission == null;
+            }
+        }
+        if (testable && app != null && !app.enabled) {
+            hints.add(getString(R.string.test_launch_needs_probe));
+        }
 
         List<String> labels = new ArrayList<>();
         List<Runnable> actions = new ArrayList<>();
+
+        if (testable) {
+            labels.add(getString(R.string.test_launch));
+            actions.add(() -> requestTestLaunch(route));
+        }
 
         if (route.exported && schemeAllowed) {
             labels.add(getString(R.string.copy_intent_uri)
@@ -554,7 +624,7 @@ public class AppDetailActivity extends AppCompatActivity {
                 actions.add(() -> copyRouteIntent(route, true, true));
             }
 
-            if (RuleExporter.canUsePureUri(route.action, route.uri, route.mimeType,
+            if (RuleExporter.canUsePureUri(action, route.uri, route.mimeType,
                     route.categories)) {
                 labels.add(getString(R.string.copy_uri));
                 actions.add(() -> copyPureUri(route));
@@ -576,17 +646,151 @@ public class AppDetailActivity extends AppCompatActivity {
                 .setTitle(title)
                 .setMessage(message)
                 .setItems(labels.toArray(new CharSequence[0]), (dialog, which) -> {
-                    Runnable action = actions.get(which);
-                    if (action != null) action.run();
+                    Runnable action1 = actions.get(which);
+                    if (action1 != null) action1.run();
                 })
                 .setNegativeButton(R.string.cancel, null)
                 .show();
     }
 
+    private static String effectiveAction(RouteCandidate route) {
+        if (route.resolvedAction != null && !route.resolvedAction.isEmpty()) {
+            return route.resolvedAction;
+        }
+        return route.action;
+    }
+
+    private void requestTestLaunch(RouteCandidate route) {
+        if (RouteTester.isHighRisk(route)) {
+            new MaterialAlertDialogBuilder(this)
+                    .setTitle(R.string.test_launch_risk_title)
+                    .setMessage(R.string.test_launch_risk_message)
+                    .setPositiveButton(R.string.test_launch,
+                            (dialog, which) -> launchTest(route))
+                    .setNegativeButton(R.string.cancel, null)
+                    .show();
+        } else {
+            launchTest(route);
+        }
+    }
+
+    private void launchTest(RouteCandidate route) {
+        RouteTester.Outcome outcome = RouteTester.launch(this, route);
+        long now = System.currentTimeMillis();
+        switch (outcome.result) {
+            case LAUNCHED:
+                if (pendingTest != null) {
+                    recordTest(pendingTest, RouteCandidate.TEST_NOT_CAPTURED,
+                            pendingTestAt, null);
+                }
+                pendingTest = route;
+                pendingTestAt = now;
+                recordTest(route, RouteCandidate.TEST_STARTED, now, null);
+                Toast.makeText(this, R.string.test_launch_started,
+                        Toast.LENGTH_SHORT).show();
+                break;
+            case NO_MATCH:
+                recordTest(route, RouteCandidate.TEST_FAILED, now, null);
+                Toast.makeText(this, R.string.test_launch_no_match,
+                        Toast.LENGTH_LONG).show();
+                break;
+            case NOT_EXPORTED:
+                recordTest(route, RouteCandidate.TEST_FAILED, now, null);
+                Toast.makeText(this, R.string.test_launch_not_exported,
+                        Toast.LENGTH_LONG).show();
+                break;
+            case SECURITY:
+                recordTest(route, RouteCandidate.TEST_FAILED, now, null);
+                Toast.makeText(this, R.string.test_launch_security,
+                        Toast.LENGTH_LONG).show();
+                break;
+            default:
+                recordTest(route, RouteCandidate.TEST_FAILED, now, null);
+                Toast.makeText(this, R.string.test_launch_failed,
+                        Toast.LENGTH_LONG).show();
+                break;
+        }
+    }
+
+    private void recordTest(RouteCandidate route, int result, long at, String component) {
+        executor.execute(() -> {
+            repository.updateRouteTest(pkg, route.routeKey(), result, at, component);
+            main.post(() -> {
+                if (isFinishing() || isDestroyed()) return;
+                loadRoutes();
+            });
+        });
+    }
+
+    /**
+     * Links a launch to a capture from the target process. P2 has no caller
+     * field, so this is a time-window association, not proof.
+     */
+    private void checkPendingTest() {
+        if (pendingTest == null || checkingTest) return;
+        final RouteCandidate route = pendingTest;
+        final long startedAt = pendingTestAt;
+        checkingTest = true;
+        executor.execute(() -> {
+            CaptureEntry captured = null;
+            boolean expired = false;
+            try {
+                List<CaptureEntry> captures = repository.getCaptures(pkg, 40);
+                CaptureEntry fallback = null;
+                long lower = startedAt - 500;
+                for (CaptureEntry capture : captures) {
+                    if (capture.timestamp < lower) break;
+                    if (!ProbeProtocol.SOURCE_ON_CREATE.equals(capture.source)
+                            && !ProbeProtocol.SOURCE_ON_NEW_INTENT.equals(capture.source)) {
+                        continue;
+                    }
+                    if (capture.targetActivity == null) continue;
+                    if (route.resolvedComponent != null
+                            && route.resolvedComponent.equals(capture.targetActivity)) {
+                        captured = capture;
+                        break;
+                    }
+                    if (fallback == null) fallback = capture;
+                }
+                if (captured == null) captured = fallback;
+                expired = System.currentTimeMillis() - startedAt > TEST_WINDOW_MS;
+                if (captured != null) {
+                    repository.updateRouteTest(pkg, route.routeKey(),
+                            RouteCandidate.TEST_CAPTURED, startedAt,
+                            captured.targetActivity);
+                } else if (expired) {
+                    repository.updateRouteTest(pkg, route.routeKey(),
+                            RouteCandidate.TEST_NOT_CAPTURED, startedAt, null);
+                }
+            } catch (Throwable ignored) {
+                main.post(() -> checkingTest = false);
+                return;
+            }
+
+            final CaptureEntry result = captured;
+            final boolean timedOut = expired;
+            main.post(() -> {
+                checkingTest = false;
+                if (isFinishing() || isDestroyed()) return;
+                if (result == null && !timedOut) return;
+                if (pendingTest == route) pendingTest = null;
+                if (result != null) {
+                    Toast.makeText(this, getString(R.string.test_launch_captured,
+                            CaptureAdapter.simpleName(result.targetActivity)),
+                            Toast.LENGTH_LONG).show();
+                } else {
+                    Toast.makeText(this, R.string.test_launch_not_captured,
+                            Toast.LENGTH_LONG).show();
+                }
+                loadRoutes();
+            });
+        });
+    }
+
     private void copyRouteIntent(RouteCandidate route, boolean locked, boolean confirm) {
         String component = route.alias != null ? route.alias : route.activity;
         boolean useComponent = locked || route.uri == null;
-        RuleExporter.Outcome outcome = RuleExporter.buildIntentUri(pkg, route.action,
+        RuleExporter.Outcome outcome = RuleExporter.buildIntentUri(pkg, effectiveAction(route),
                 route.uri, route.mimeType, route.categories,
                 useComponent ? component : null, Collections.emptyList());
         if (!outcome.ok()) {
@@ -603,8 +807,8 @@ public class AppDetailActivity extends AppCompatActivity {
     }
 
     private void copyPureUri(RouteCandidate route) {
-        RuleExporter.Outcome outcome = RuleExporter.buildPureUri(route.action, route.uri,
-                route.mimeType, route.categories);
+        RuleExporter.Outcome outcome = RuleExporter.buildPureUri(effectiveAction(route),
+                route.uri, route.mimeType, route.categories);
         if (!outcome.ok()) {
             Toast.makeText(this, errorText(outcome), Toast.LENGTH_LONG).show();
             return;
@@ -639,6 +843,31 @@ public class AppDetailActivity extends AppCompatActivity {
                 route.exported ? "true" : "false"));
         if (route.exportedInferred) builder.append(getString(R.string.details_inferred));
         builder.append('\n');
+        if (route.resolveState != RouteCandidate.RESOLVE_UNKNOWN) {
+            builder.append(getString(R.string.details_resolve_state,
+                    resolveStateLabel(route.resolveState))).append('\n');
+            if (route.resolvedComponent != null) {
+                builder.append(getString(R.string.details_resolved_component,
+                        route.resolvedComponent)).append('\n');
+            }
+            if (route.resolvedAction != null) {
+                builder.append(getString(R.string.details_resolved_action,
+                        route.resolvedAction)).append('\n');
+            }
+        }
+        if (route.testResult != RouteCandidate.TEST_NONE) {
+            builder.append(getString(R.string.details_test_result,
+                    testResultLabel(route.testResult))).append('\n');
+            if (route.testedComponent != null) {
+                builder.append(getString(R.string.details_tested_component,
+                        route.testedComponent)).append('\n');
+            }
+            if (route.testedAt > 0) {
+                CharSequence tested = DateUtils.getRelativeTimeSpanString(route.testedAt,
+                        System.currentTimeMillis(), DateUtils.MINUTE_IN_MILLIS);
+                builder.append(getString(R.string.details_tested_at, tested)).append('\n');
+            }
+        }
         if (route.launchMode != null) {
             builder.append(getString(R.string.details_launch_mode, route.launchMode))
                     .append('\n');
@@ -827,6 +1056,36 @@ public class AppDetailActivity extends AppCompatActivity {
             }
         }
         copy(builder.toString());
+    }
+
+    private String resolveStateLabel(int state) {
+        switch (state) {
+            case RouteCandidate.RESOLVE_MATCHED:
+                return getString(R.string.resolve_state_matched);
+            case RouteCandidate.RESOLVE_NONE:
+                return getString(R.string.resolve_state_none);
+            case RouteCandidate.RESOLVE_BLOCKED:
+                return getString(R.string.resolve_state_blocked);
+            case RouteCandidate.RESOLVE_ERROR:
+                return getString(R.string.resolve_state_error);
+            default:
+                return getString(R.string.resolve_state_unknown);
+        }
+    }
+
+    private String testResultLabel(int result) {
+        switch (result) {
+            case RouteCandidate.TEST_STARTED:
+                return getString(R.string.test_result_started);
+            case RouteCandidate.TEST_CAPTURED:
+                return getString(R.string.test_result_captured);
+            case RouteCandidate.TEST_FAILED:
+                return getString(R.string.test_result_failed);
+            case RouteCandidate.TEST_NOT_CAPTURED:
+                return getString(R.string.test_result_not_captured);
+            default:
+                return getString(R.string.test_result_none);
+        }
     }
 
     private String errorText(RuleExporter.Outcome outcome) {

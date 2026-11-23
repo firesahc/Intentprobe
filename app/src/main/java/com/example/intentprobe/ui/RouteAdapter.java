@@ -62,7 +62,9 @@ public class RouteAdapter extends RecyclerView.Adapter<RouteAdapter.Holder> {
                 || contains(route.action, query)
                 || contains(route.host, query)
                 || contains(route.path, query)
-                || contains(route.scheme, query);
+                || contains(route.scheme, query)
+                || contains(route.resolvedComponent, query)
+                || contains(route.testedComponent, query);
     }
 
     private static boolean contains(String value, String query) {
@@ -94,8 +96,19 @@ public class RouteAdapter extends RecyclerView.Adapter<RouteAdapter.Holder> {
         String badge;
         int badgeColor;
         if (dex) {
-            badge = context.getString(R.string.route_origin_dex);
-            badgeColor = R.color.status_warn;
+            if (route.resolveState == RouteCandidate.RESOLVE_MATCHED) {
+                badge = context.getString(R.string.route_dex_launchable);
+                badgeColor = R.color.status_ok;
+            } else if (route.resolveState == RouteCandidate.RESOLVE_NONE) {
+                badge = context.getString(R.string.route_dex_no_match);
+                badgeColor = R.color.status_warn;
+            } else if (route.resolveState == RouteCandidate.RESOLVE_BLOCKED) {
+                badge = context.getString(R.string.route_dex_blocked);
+                badgeColor = R.color.status_error;
+            } else {
+                badge = context.getString(R.string.route_origin_dex);
+                badgeColor = R.color.status_warn;
+            }
         } else {
             badge = route.exported
                     ? context.getString(R.string.route_exported)
@@ -125,6 +138,15 @@ public class RouteAdapter extends RecyclerView.Adapter<RouteAdapter.Holder> {
         List<String> meta = new ArrayList<>();
         if (dex) {
             meta.add(context.getString(R.string.route_origin_dex_hint));
+            if (route.resolveState == RouteCandidate.RESOLVE_MATCHED
+                    && route.resolvedComponent != null) {
+                meta.add(context.getString(R.string.route_resolved_short,
+                        simpleName(route.resolvedComponent)));
+            }
+        }
+        if (route.testResult == RouteCandidate.TEST_CAPTURED && route.testedComponent != null) {
+            meta.add(context.getString(R.string.route_tested_short,
+                    simpleName(route.testedComponent)));
         }
         if (route.uri != null && route.action != null) {
             meta.add(shortName(route.action));

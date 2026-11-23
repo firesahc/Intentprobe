@@ -99,35 +99,7 @@ public final class RuleExporter {
             return Outcome.failure(Error.BLOCKED_SCHEME, null);
         }
 
-        Intent intent = new Intent();
-        if (!isEmpty(action)) {
-            intent.setAction(action);
-        } else if (!isEmpty(data) || !isEmpty(type)) {
-            intent.setAction(Intent.ACTION_VIEW);
-        }
-
-        if (!isEmpty(data) && !isEmpty(type)) {
-            intent.setDataAndType(Uri.parse(data), type);
-        } else if (!isEmpty(data)) {
-            intent.setData(Uri.parse(data));
-        } else if (!isEmpty(type)) {
-            intent.setType(type);
-        }
-
-        if (!isEmpty(componentClass)) {
-            intent.setClassName(pkg, resolveClassName(pkg, componentClass));
-        } else {
-            intent.setPackage(pkg);
-        }
-
-        if (!isEmpty(categories)) {
-            for (String category : categories.split(",")) {
-                String trimmed = category.trim();
-                if (!trimmed.isEmpty() && !IGNORED_CATEGORIES.contains(trimmed)) {
-                    intent.addCategory(trimmed);
-                }
-            }
-        }
+        Intent intent = newIntent(pkg, action, data, type, categories, componentClass);
 
         Outcome outcome = new Outcome();
         outcome.componentUsed = !isEmpty(componentClass);
@@ -162,6 +134,52 @@ public final class RuleExporter {
         }
         outcome.value = uri;
         return outcome;
+    }
+
+    /**
+     * Builds the same Intent that {@link #buildIntentUri} serializes, without
+     * extras. The test launcher uses this so testing and exporting cannot
+     * drift apart.
+     */
+    public static Intent buildLaunchIntent(String pkg, String action, String data, String type,
+            String categories, String componentClass) {
+        if (pkg == null || pkg.trim().isEmpty()) return null;
+        if (!isSchemeAllowed(data)) return null;
+        return newIntent(pkg, action, data, type, categories, componentClass);
+    }
+
+    private static Intent newIntent(String pkg, String action, String data, String type,
+            String categories, String componentClass) {
+        Intent intent = new Intent();
+        if (!isEmpty(action)) {
+            intent.setAction(action);
+        } else if (!isEmpty(data) || !isEmpty(type)) {
+            intent.setAction(Intent.ACTION_VIEW);
+        }
+
+        if (!isEmpty(data) && !isEmpty(type)) {
+            intent.setDataAndType(Uri.parse(data), type);
+        } else if (!isEmpty(data)) {
+            intent.setData(Uri.parse(data));
+        } else if (!isEmpty(type)) {
+            intent.setType(type);
+        }
+
+        if (!isEmpty(componentClass)) {
+            intent.setClassName(pkg, resolveClassName(pkg, componentClass));
+        } else {
+            intent.setPackage(pkg);
+        }
+
+        if (!isEmpty(categories)) {
+            for (String category : categories.split(",")) {
+                String trimmed = category.trim();
+                if (!trimmed.isEmpty() && !IGNORED_CATEGORIES.contains(trimmed)) {
+                    intent.addCategory(trimmed);
+                }
+            }
+        }
+        return intent;
     }
 
     public static Outcome buildPureUri(String action, String data, String type,

@@ -38,12 +38,30 @@ public class ProbeRepository {
         db.beginTransaction();
         try {
             for (AppEntry app : apps) {
+                long oldVersion = -1;
+                long oldMtime = -1;
+                try (Cursor c = db.query(DbContract.TABLE_APPS,
+                        new String[]{DbContract.COL_VERSION_CODE, DbContract.COL_APK_MTIME},
+                        DbContract.COL_PKG + "=?", new String[]{app.pkg},
+                        null, null, null, "1")) {
+                    if (c.moveToFirst()) {
+                        oldVersion = c.getLong(0);
+                        oldMtime = c.getLong(1);
+                    }
+                }
                 ContentValues insert = appValues(app);
                 insert.put(DbContract.COL_ENABLED, 0);
                 db.insertWithOnConflict(DbContract.TABLE_APPS, null, insert,
                         SQLiteDatabase.CONFLICT_IGNORE);
                 db.update(DbContract.TABLE_APPS, appValues(app),
                         DbContract.COL_PKG + "=?", new String[]{app.pkg});
+                // A new APK build may change components and filters, so old
+                // test results no longer describe it.
+                if (oldVersion >= 0 && (oldVersion != app.versionCode
+                        || oldMtime != app.apkMtime)) {
+                    db.delete(DbContract.TABLE_ROUTE_TESTS,
+                            DbContract.COL_PKG + "=?", new String[]{app.pkg});
+                }
             }
             db.setTransactionSuccessful();
         } finally {
@@ -143,16 +161,91 @@ public class ProbeRepository {
 
     public List<RouteCandidate> getRoutes(String pkg) {
         List<RouteCandidate> result = new ArrayList<>();
+        Map<String, RouteCandidate> byKey = new HashMap<>();
         try (Cursor c = db().query(DbContract.TABLE_ROUTES, null,
                 DbContract.COL_PKG + "=?", new String[]{pkg}, null, null,
                 DbContract.COL_ORIGIN + " DESC, "
                         + DbContract.COL_ACTIVITY + " COLLATE NOCASE ASC, "
                         + DbContract.COL_ACTION + " ASC, " + DbContract.COL_URI + " ASC")) {
             while (c.moveToNext()) {
-                result.add(readRoute(c));
+                RouteCandidate route = readRoute(c);
+                result.add(route);
+                byKey.put(route.routeKey(), route);
+            }
+        }
+        if (result.isEmpty()) return result;
+
+        try (Cursor c = db().query(DbContract.TABLE_ROUTE_TESTS, null,
+                DbContract.COL_PKG + "=?", new String[]{pkg}, null, null, null)) {
+            while (c.moveToNext()) {
+                RouteCandidate route = byKey.get(
+                        str(c, DbContract.COL_ROUTE_KEY));
+                if (route == null) continue;
+                route.resolveState = (int) num(c, DbContract.COL_RESOLVE_STATE);
+                route.resolvedComponent = str(c, DbContract.COL_RESOLVED_COMPONENT);
+                route.resolvedAction = str(c, DbContract.COL_RESOLVED_ACTION);
+                route.testResult = (int) num(c, DbContract.COL_TEST_RESULT);
+                route.testedAt = num(c, DbContract.COL_TESTED_AT);
+                route.testedComponent = str(c, DbContract.COL_TESTED_COMPONENT);
             }
         }
         return result;
+    }
+
+    /**
+     * Stores the resolve outcome only. Test fields are left untouched so a
+     * rescan does not erase a user's verification.
+     */
+    public void saveRouteResolutions(String pkg, List<RouteCandidate> routes) {
+        if (routes == null || routes.isEmpty()) return;
+        SQLiteDatabase db = db();
+        db.beginTransaction();
+        try {
+            for (RouteCandidate route : routes) {
+                if (!"dex".equals(route.origin)) continue;
+                ContentValues values = new ContentValues();
+                values.put(DbContract.COL_RESOLVE_STATE, route.resolveState);
+                values.put(DbContract.COL_RESOLVED_COMPONENT, route.resolvedComponent);
+                values.put(DbContract.COL_RESOLVED_ACTION, route.resolvedAction);
+                int rows = db.update(DbContract.TABLE_ROUTE_TESTS, values,
+                        DbContract.COL_PKG + "=? AND " + DbContract.COL_ROUTE_KEY + "=?",
+                        new String[]{pkg, route.routeKey()});
+                if (rows == 0) {
+                    ContentValues insert = new ContentValues(values);
+                    insert.put(DbContract.COL_PKG, pkg);
+                    insert.put(DbContract.COL_ROUTE_KEY, route.routeKey());
+                    insert.put(DbContract.COL_TEST_RESULT, RouteCandidate.TEST_NONE);
+                    insert.put(DbContract.COL_TESTED_AT, 0);
+                    db.insertWithOnConflict(DbContract.TABLE_ROUTE_TESTS, null, insert,
+                            SQLiteDatabase.CONFLICT_REPLACE);
+                }
+            }
+            db.setTransactionSuccessful();
+        } finally {
+            db.endTransaction();
+        }
+    }
+
+    public void updateRouteTest(String pkg, String routeKey, int testResult,
+            long testedAt, String testedComponent) {
+        ContentValues values = new ContentValues();
+        values.put(DbContract.COL_TEST_RESULT, testResult);
+        values.put(DbContract.COL_TESTED_AT, testedAt);
+        values.put(DbContract.COL_TESTED_COMPONENT, testedComponent);
+        int rows = db().update(DbContract.TABLE_ROUTE_TESTS, values,
+                DbContract.COL_PKG + "=? AND " + DbContract.COL_ROUTE_KEY + "=?",
+                new String[]{pkg, routeKey});
+        if (rows == 0) {
+            values.put(DbContract.COL_PKG, pkg);
+            values.put(DbContract.COL_ROUTE_KEY, routeKey);
+            db().insertWithOnConflict(DbContract.TABLE_ROUTE_TESTS, null, values,
+                    SQLiteDatabase.CONFLICT_REPLACE);
+        }
+    }
+
+    public void clearRouteTests(String pkg) {
+        db().delete(DbContract.TABLE_ROUTE_TESTS,
+                DbContract.COL_PKG + "=?", new String[]{pkg});
     }
 
     public int getRouteCount(String pkg) {
