@@ -15,10 +15,12 @@ import android.text.format.DateUtils;
 import android.view.Menu;
 import android.view.MenuItem;
 import android.view.View;
+import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.content.ContextCompat;
 import androidx.recyclerview.widget.LinearLayoutManager;
@@ -551,6 +553,42 @@ public class AppDetailActivity extends AppCompatActivity {
                 .show();
     }
 
+    /**
+     * Shows a dialog with a message and a list of tappable options.
+     * AlertController gives the message priority over setItems, so using both
+     * on a builder hides every option; the options live in a custom view here.
+     */
+    private void showOptionDialog(String title, String message, List<String> labels,
+            List<Runnable> actions) {
+        View content = getLayoutInflater().inflate(R.layout.dialog_options, null, false);
+        TextView messageView = content.findViewById(R.id.dialog_message);
+        LinearLayout options = content.findViewById(R.id.dialog_options);
+        if (message == null || message.isEmpty()) {
+            messageView.setVisibility(View.GONE);
+        } else {
+            messageView.setText(message);
+        }
+        AlertDialog dialog = new MaterialAlertDialogBuilder(this)
+                .setTitle(title)
+                .setView(content)
+                .setNegativeButton(R.string.cancel, null)
+                .create();
+        for (int i = 0; i < labels.size(); i++) {
+            MaterialButton button = (MaterialButton) getLayoutInflater()
+                    .inflate(R.layout.item_dialog_option, options, false);
+            button.setText(labels.get(i));
+            Runnable action = i < actions.size() ? actions.get(i) : null;
+            if (action != null) {
+                button.setOnClickListener(v -> {
+                    dialog.dismiss();
+                    action.run();
+                });
+            }
+            options.addView(button);
+        }
+        dialog.show();
+    }
+
     private void showRouteDialog(RouteCandidate route) {
         boolean dex = "dex".equals(route.origin);
         String component = route.alias != null ? route.alias : route.activity;
@@ -642,15 +680,7 @@ public class AppDetailActivity extends AppCompatActivity {
         String title = hasComponent ? CaptureAdapter.simpleName(component)
                 : (route.uri != null ? route.uri : getString(R.string.route_origin_dex));
         String message = hints.isEmpty() ? null : joinLines(hints);
-        new MaterialAlertDialogBuilder(this)
-                .setTitle(title)
-                .setMessage(message)
-                .setItems(labels.toArray(new CharSequence[0]), (dialog, which) -> {
-                    Runnable action1 = actions.get(which);
-                    if (action1 != null) action1.run();
-                })
-                .setNegativeButton(R.string.cancel, null)
-                .show();
+        showOptionDialog(title, message, labels, actions);
     }
 
     private static String effectiveAction(RouteCandidate route) {
@@ -940,15 +970,8 @@ public class AppDetailActivity extends AppCompatActivity {
         labels.add(getString(R.string.copy_details));
         actions.add(() -> copyCaptureDetails(capture));
 
-        new MaterialAlertDialogBuilder(this)
-                .setTitle(R.string.capture_details_title)
-                .setMessage(hints.isEmpty() ? null : joinLines(hints))
-                .setItems(labels.toArray(new CharSequence[0]), (dialog, which) -> {
-                    Runnable action = actions.get(which);
-                    if (action != null) action.run();
-                })
-                .setNegativeButton(R.string.cancel, null)
-                .show();
+        showOptionDialog(getString(R.string.capture_details_title),
+                hints.isEmpty() ? null : joinLines(hints), labels, actions);
     }
 
     private void copyCaptureIntent(CaptureEntry capture, boolean locked, boolean confirm) {
