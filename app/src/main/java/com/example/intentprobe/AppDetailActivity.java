@@ -5,6 +5,7 @@ import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.ContentResolver;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.database.ContentObserver;
 import android.os.Bundle;
 import android.os.Handler;
@@ -15,6 +16,7 @@ import android.text.format.DateUtils;
 import android.view.Menu;
 import android.view.MenuItem;
 import android.view.View;
+import android.widget.ImageButton;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.TextView;
@@ -63,6 +65,8 @@ public class AppDetailActivity extends AppCompatActivity {
 
     private static final int CAPTURE_LIMIT = 200;
     private static final long TEST_WINDOW_MS = 30_000;
+    private static final String PREFS_UI = "intentprobe_ui";
+    private static final String PREF_HEADER_COLLAPSED = "header_collapsed";
 
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private final Handler main = new Handler(Looper.getMainLooper());
@@ -78,6 +82,7 @@ public class AppDetailActivity extends AppCompatActivity {
 
     private boolean routesTab = true;
     private boolean scanning;
+    private boolean headerCollapsed;
     private RouteCandidate pendingTest;
     private long pendingTestAt;
     private boolean checkingTest;
@@ -93,6 +98,8 @@ public class AppDetailActivity extends AppCompatActivity {
     private TextView tvPkg;
     private TextView tvConnection;
     private TextView tvConnectionDetail;
+    private TextView tvConnectionSummary;
+    private ImageButton btnToggleDetail;
     private TextView tvHint;
     private SwitchMaterial switchProbe;
     private MaterialButton btnScan;
@@ -122,6 +129,8 @@ public class AppDetailActivity extends AppCompatActivity {
         tvPkg = findViewById(R.id.tv_app_pkg);
         tvConnection = findViewById(R.id.tv_connection);
         tvConnectionDetail = findViewById(R.id.tv_connection_detail);
+        tvConnectionSummary = findViewById(R.id.tv_connection_summary);
+        btnToggleDetail = findViewById(R.id.btn_toggle_detail);
         tvHint = findViewById(R.id.tv_hint);
         switchProbe = findViewById(R.id.switch_probe);
         btnScan = findViewById(R.id.btn_scan);
@@ -162,6 +171,14 @@ public class AppDetailActivity extends AppCompatActivity {
         });
         btnScan.setOnClickListener(v -> scan());
         btnLsposed.setOnClickListener(v -> openLsposed());
+
+        SharedPreferences prefs = getSharedPreferences(PREFS_UI, MODE_PRIVATE);
+        headerCollapsed = prefs.getBoolean(PREF_HEADER_COLLAPSED, true);
+        btnToggleDetail.setOnClickListener(v -> {
+            headerCollapsed = !headerCollapsed;
+            prefs.edit().putBoolean(PREF_HEADER_COLLAPSED, headerCollapsed).apply();
+            applyHeaderCollapsed();
+        });
 
         toggleGroup.check(R.id.btn_tab_routes);
         toggleGroup.addOnButtonCheckedListener((group, checkedId, isChecked) -> {
@@ -288,15 +305,18 @@ public class AppDetailActivity extends AppCompatActivity {
         boolean fresh = connection != null
                 && now - connection.lastSeen < ProbeProtocol.CONNECTION_FRESH_MS;
         String detail;
+        String summary;
         if (connection == null) {
             tvConnection.setText("● " + getString(R.string.connection_none));
             tvConnection.setTextColor(ContextCompat.getColor(this, R.color.status_off));
             detail = app.enabled ? getString(R.string.lsposed_guide)
                     : getString(R.string.probe_off);
+            summary = detail;
         } else if (fresh) {
             tvConnection.setText("● " + getString(R.string.connection_connected));
             tvConnection.setTextColor(ContextCompat.getColor(this, R.color.status_ok));
             detail = connectionDetail(connection);
+            summary = connectionSummary(connection);
         } else {
             tvConnection.setText("● " + getString(R.string.connection_stale));
             tvConnection.setTextColor(ContextCompat.getColor(this, R.color.status_warn));
@@ -304,12 +324,34 @@ public class AppDetailActivity extends AppCompatActivity {
             if (app.enabled) {
                 detail += "\n" + getString(R.string.lsposed_guide);
             }
+            summary = connectionSummary(connection);
+            if (app.enabled) {
+                summary += " · " + getString(R.string.header_restart_hint);
+            }
         }
         tvConnectionDetail.setText(detail);
+        tvConnectionSummary.setText(summary);
+        applyHeaderCollapsed();
 
         btnScan.setEnabled(!scanning);
         btnScan.setText(scanning ? R.string.scanning
                 : (app.lastScanAt == 0 ? R.string.scan : R.string.rescan));
+    }
+
+    private void applyHeaderCollapsed() {
+        tvPkg.setVisibility(headerCollapsed ? View.GONE : View.VISIBLE);
+        tvConnectionDetail.setVisibility(headerCollapsed ? View.GONE : View.VISIBLE);
+        tvConnectionSummary.setVisibility(headerCollapsed ? View.VISIBLE : View.GONE);
+        btnToggleDetail.setImageResource(headerCollapsed
+                ? R.drawable.ic_expand_more : R.drawable.ic_expand_less);
+        btnToggleDetail.setContentDescription(getString(headerCollapsed
+                ? R.string.header_expand : R.string.header_collapse));
+    }
+
+    private String connectionSummary(ConnectionEntry entry) {
+        CharSequence time = DateUtils.getRelativeTimeSpanString(entry.lastSeen,
+                System.currentTimeMillis(), DateUtils.MINUTE_IN_MILLIS);
+        return getString(R.string.connection_detail, time);
     }
 
     private String connectionDetail(ConnectionEntry entry) {

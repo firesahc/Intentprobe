@@ -22,6 +22,9 @@
     <string name="connection_none">未连接</string>
     <string name="connection_detail">最近心跳：%1$s</string>
     <string name="connection_process">进程：%1$s</string>
+    <string name="header_expand">展开详情</string>
+    <string name="header_collapse">收起详情</string>
+    <string name="header_restart_hint">需重启应用</string>
     <string name="open_lsposed">打开 LSPosed</string>
     <string name="lsposed_missing">未找到 LSPosed 管理器，请手动打开</string>
     <string name="lsposed_guide">在 LSPosed → 模块 → Intentprobe → 作用域中勾选此应用，然后强行停止并重新打开应用。</string>
